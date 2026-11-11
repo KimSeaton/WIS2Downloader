@@ -1,0 +1,718 @@
+= مرجع API لـ WIS2 Downloader
+:toc: right
+:toc-title: المحتويات
+:toclevels: 3
+:icons: font
+:source-highlighter: highlight.js
+:sectnums:
+:lang: ar
+:docinfo: shared
+
+[NOTE]
+====
+تُرجمت هذه الوثيقة آليًا من الإنجليزية باستخدام Claude AI.
+ينبغي مراجعة المصطلحات المتعلقة بمجال WMO/الأرصاد الجوية من قِبل متحدث أصلي قبل
+الاستخدام الإنتاجي. راجع link:../en/[النسخة الإنجليزية الأصلية] للاطلاع على النسخة المرجعية.
+====
+
+== نظرة عامة
+
+يُتيح WIS2 Downloader واجهة REST API لإدارة الاشتراكات ومراقبة النظام.
+
+* **عنوان URL الأساسي:** `http://localhost:5002`
+* **مواصفة OpenAPI:** `http://localhost:5002/openapi`
+* **واجهة Swagger:** `http://localhost:5002/swagger`
+
+NOTE: استبدل `localhost:5002` بعنوان خادمك في حال النشر عن بُعد. يُهيَّأ عنوان URL الأساسي عبر `WIS2DOWNLOADER_SUBSCRIPTION_MANAGER_URL` في `.env`.
+
+== المصادقة
+
+لا تتطلب الـ API مصادقة. في بيئة الإنتاج، ضعها خلف وكيل عكسي مع المصادقة (راجع قسم link:admin-guide.html#_access_control[التحكم في الوصول] في دليل الإدارة).
+
+== API الاشتراكات
+
+يُعرَّف كل اشتراك بـ UUID ويربط موضوع MQTT ومسار حفظ وفلتر اختياري وبيانات اعتماد اختيارية وقائمة انتظار. يمكن أن تشترك اشتراكات متعددة في نفس الموضوع — يُفتح اتصال MQTT مرة واحدة وتُوجَّه الرسائل إلى جميع الاشتراكات المطابقة.
+
+=== عرض قائمة الاشتراكات
+
+يُعيد جميع الاشتراكات النشطة مجمَّعةً حسب الموضوع.
+
+[source,http]
+----
+GET /subscriptions
+----
+
+==== الاستجابة
+
+[cols="1,3"]
+|===
+|الحالة |الوصف
+
+|200
+|نجاح — خريطة موضوع → خريطة UUID اشتراك → تفاصيل الاشتراك
+
+|503
+|Redis غير متوفر
+|===
+
+==== مثال
+
+[source,bash]
+----
+curl http://localhost:5002/subscriptions
+----
+
+[source,json]
+----
+{
+  "cache/a/wis2/+/data/core/weather/surface-based-observations/#": {
+    "550e8400-e29b-41d4-a716-446655440000": {
+      "save_path": "surface-obs",
+      "filter": {}
+    },
+    "661f9511-f30c-52e5-b827-557766551111": {
+      "save_path": "surface-obs-bufr",
+      "filter": {
+        "name": "bufr-only",
+        "rules": [
+          { "id": "accept-bufr", "order": 1, "match": { "media_type": { "equals": "application/bufr" } }, "action": "accept" }
+        ]
+      }
+    }
+  }
+}
+----
+
+=== إنشاء اشتراك
+
+يُنشئ اشتراكًا جديدًا. يُعيِّن UUID ويُعيد سجل الاشتراك الكامل.
+
+إذا كان هذا أول اشتراك للموضوع المحدد، يُفتح اتصال MQTT. تستخدم الاشتراكات الإضافية لنفس الموضوع الاتصال القائم.
+
+[source,http]
+----
+POST /subscriptions
+Content-Type: application/json
+----
+
+==== جسم الطلب
+
+[cols="1,1,1,3"]
+|===
+|الحقل |النوع |مطلوب |الوصف
+
+|`topic`
+|string
+|نعم
+|نمط موضوع MQTT لـ WIS2. يدعم أحرف البدل `+` (مستوى واحد) و`#` (متعدد المستويات).
+
+|`target`
+|string
+|لا
+|المجلد الفرعي تحت جذر البيانات حيث تُحفظ الملفات.
+
+|`filter`
+|كائن
+|لا
+|فلتر قائم على قواعد. راجع <<_مخطط_الفلتر>>.
+
+|`credentials`
+|كائن
+|لا
+|بيانات اعتماد HTTP لمجموعات البيانات ذات الوصول المقيَّد. راجع <<_مخطط_بيانات_الاعتماد>>.
+
+|`queue`
+|string
+|لا
+|قائمة انتظار التنزيل: `high_priority` أو `small_files` (الافتراضي) أو `large_files`.
+|===
+
+==== الاستجابة
+
+[cols="1,3"]
+|===
+|الحالة |الوصف
+
+|201
+|تم الإنشاء — يُعيد سجل الاشتراك الكامل
+
+|400
+|طلب غير صالح — حقول مفقودة أو غير صحيحة
+
+|503
+|الخدمة غير متاحة — فشل الاتصال بـ Redis
+|===
+
+==== ترويسات الاستجابة
+
+[cols="1,3"]
+|===
+|الترويسة |الوصف
+
+|`Location`
+|عنوان URL لاسترداد الاشتراك المُنشأ (`/subscriptions/{id}`)
+|===
+
+==== أمثلة
+
+[source,bash]
+----
+# اشتراك بسيط
+curl -X POST http://localhost:5002/subscriptions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "topic": "cache/a/wis2/+/data/core/weather/surface-based-observations/#",
+    "target": "surface-obs"
+  }'
+----
+
+[source,bash]
+----
+# اشتراك مع فلتر
+curl -X POST http://localhost:5002/subscriptions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "topic": "cache/a/wis2/+/data/core/weather/surface-based-observations/#",
+    "target": "surface-obs-bufr",
+    "filter": {
+      "name": "bufr-only",
+      "rules": [
+        { "id": "accept-bufr", "order": 1, "match": { "media_type": { "equals": "application/bufr" } }, "action": "accept" },
+        { "id": "default-reject", "order": 999, "match": { "always": true }, "action": "reject" }
+      ]
+    }
+  }'
+----
+
+[source,bash]
+----
+# اشتراك في مجموعة بيانات ذات وصول مقيَّد باستخدام المصادقة الأساسية
+curl -X POST http://localhost:5002/subscriptions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "topic": "cache/a/wis2/+/data/recommended/weather/surface-based-observations/#",
+    "target": "restricted-obs",
+    "credentials": { "type": "basic", "username": "myuser", "password": "s3cr3t" }
+  }'
+----
+
+[source,bash]
+----
+# توجيه التنزيلات الكبيرة إلى قائمة انتظار large-files
+curl -X POST http://localhost:5002/subscriptions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "topic": "cache/a/wis2/fr-meteofrance/data/core/weather/space-based-observations/noaa-21/cris",
+    "target": "space-obs",
+    "queue": "large_files"
+  }'
+----
+
+[source,json]
+----
+{
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "topic": "cache/a/wis2/+/data/core/weather/surface-based-observations/#",
+  "save_path": "surface-obs",
+  "filter": {},
+  "credentials": null,
+  "queue": "small_files"
+}
+----
+
+=== الحصول على اشتراك
+
+يُعيد السجل الكامل لاشتراك محدد.
+
+[source,http]
+----
+GET /subscriptions/{id}
+----
+
+==== معاملات المسار
+
+[cols="1,1,3"]
+|===
+|المعامل |النوع |الوصف
+
+|`id`
+|string (UUID)
+|UUID الاشتراك المُعاد عند إنشائه
+|===
+
+==== الاستجابة
+
+[cols="1,3"]
+|===
+|الحالة |الوصف
+
+|200
+|نجاح
+
+|404
+|الاشتراك غير موجود
+|===
+
+==== مثال
+
+[source,bash]
+----
+curl http://localhost:5002/subscriptions/550e8400-e29b-41d4-a716-446655440000
+----
+
+[source,json]
+----
+{
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "topic": "cache/a/wis2/+/data/core/weather/surface-based-observations/#",
+  "save_path": "surface-obs",
+  "filter": {},
+  "credentials": null,
+  "queue": "small_files"
+}
+----
+
+NOTE: لا تُعاد أسرار بيانات الاعتماد (`password` و`token`) أبدًا. تُضمَّن في الاستجابات `type` و`username` فقط (للمصادقة الأساسية).
+
+=== تحديث اشتراك
+
+يُحدِّث مسار الحفظ أو الفلتر أو بيانات الاعتماد أو قائمة الانتظار لاشتراك قائم. لا يمكن تغيير الموضوع — احذف الاشتراك وأعد إنشاءه لتغيير الموضوع.
+
+[source,http]
+----
+PUT /subscriptions/{id}
+Content-Type: application/json
+----
+
+==== جسم الطلب
+
+جميع الحقول اختيارية. تُحدَّث الحقول المُقدَّمة فقط.
+
+[cols="1,1,3"]
+|===
+|الحقل |النوع |الوصف
+
+|`target`
+|string
+|المجلد الفرعي الجديد تحت جذر البيانات
+
+|`filter`
+|كائن
+|الفلتر الجديد القائم على قواعد (يستبدل الفلتر الحالي)
+
+|`credentials`
+|كائن
+|بيانات الاعتماد الجديدة (تستبدل بيانات الاعتماد الحالية)
+
+|`queue`
+|string
+|قائمة الانتظار الجديدة: `high_priority` أو `small_files` أو `large_files`
+|===
+
+==== الاستجابة
+
+[cols="1,3"]
+|===
+|الحالة |الوصف
+
+|200
+|سجل الاشتراك المُحدَّث
+
+|400
+|قيمة حقل غير صالحة
+
+|404
+|الاشتراك غير موجود
+
+|503
+|Redis غير متوفر
+|===
+
+==== مثال
+
+[source,bash]
+----
+curl -X PUT http://localhost:5002/subscriptions/550e8400-e29b-41d4-a716-446655440000 \
+  -H "Content-Type: application/json" \
+  -d '{ "target": "surface-obs-v2", "queue": "high_priority" }'
+----
+
+=== حذف اشتراك
+
+يحذف اشتراكًا. إذا كان آخر اشتراك لموضوعه، يُغلَق اتصال MQTT لذلك الموضوع.
+
+[source,http]
+----
+DELETE /subscriptions/{id}
+----
+
+==== الاستجابة
+
+[cols="1,3"]
+|===
+|الحالة |الوصف
+
+|200
+|تم الحذف بنجاح
+
+|404
+|الاشتراك غير موجود
+
+|503
+|Redis غير متوفر
+|===
+
+==== مثال
+
+[source,bash]
+----
+curl -X DELETE http://localhost:5002/subscriptions/550e8400-e29b-41d4-a716-446655440000
+----
+
+[source,json]
+----
+{ "status": "deleted", "id": "550e8400-e29b-41d4-a716-446655440000" }
+----
+
+== API المراقبة
+
+=== فحص الصحة
+
+[source,http]
+----
+GET /health
+----
+
+يُعيد دائمًا 200. تحقق من حقل `status` للحالة الفعلية.
+
+[source,bash]
+----
+curl http://localhost:5002/health
+----
+
+[source,json]
+----
+{ "status": "healthy" }
+----
+
+=== مقاييس Prometheus
+
+يُعيد المقاييس بتنسيق نص Prometheus.
+
+[source,http]
+----
+GET /metrics
+----
+
+==== المقاييس المتاحة
+
+[cols="2,1,2,3"]
+|===
+|المقياس |النوع |التسميات |الوصف
+
+|`wis2downloader_notifications_total`
+|Counter
+|status
+|إجمالي الإشعارات المعالَجة بواسطة Celery
+
+|`wis2downloader_downloads_total`
+|Counter
+|cache, media_type
+|الملفات المُنزَّلة بنجاح
+
+|`wis2downloader_downloads_bytes_total`
+|Counter
+|cache, media_type
+|إجمالي البايتات المُنزَّلة
+
+|`wis2downloader_skipped_total`
+|Counter
+|reason
+|الإشعارات المتخطاة حسب السبب
+
+|`wis2downloader_failed_total`
+|Counter
+|cache, reason
+|التنزيلات الفاشلة
+
+|`wis2downloader_celery_queue_length`
+|Gauge
+|queue_name
+|المهام الحالية في جميع قوائع انتظار Celery
+|===
+
+==== مثال
+
+[source,bash]
+----
+curl http://localhost:5002/metrics
+----
+
+=== مواصفة OpenAPI
+
+[source,http]
+----
+GET /openapi
+----
+
+=== واجهة Swagger
+
+وثائق API التفاعلية متاحة على:
+
+[source,http]
+----
+GET /
+GET /swagger
+----
+
+== استجابات الأخطاء
+
+تتبع جميع استجابات الأخطاء هذا التنسيق:
+
+[source,json]
+----
+{ "error": "Error message describing the problem" }
+----
+
+=== رسائل الخطأ الشائعة
+
+[cols="1,1,2"]
+|===
+|الحالة |الخطأ |السبب
+
+|400
+|"No topic provided"
+|POST /subscriptions بدون حقل `topic`
+
+|400
+|"credentials.type must be 'basic' or 'bearer'"
+|نوع بيانات اعتماد غير صالح
+
+|400
+|"queue must be one of: high_priority, large_files, small_files"
+|اسم قائمة انتظار غير معروف
+
+|404
+|"Subscription '{id}' not found"
+|UUID غير موجود
+
+|503
+|"Failed to connect to Redis: ..."
+|Redis غير متوفر
+
+|503
+|"Failed to queue subscription command..."
+|فشل Redis pub/sub
+|===
+
+== مخططات البيانات
+
+=== الاشتراك
+
+سجل الاشتراك الكامل كما يُخزَّن ويُعاد بواسطة الـ API.
+
+[cols="1,1,3"]
+|===
+|الحقل |النوع |الوصف
+
+|`id`
+|string (UUID)
+|معرِّف فريد يُعيَّن عند الإنشاء
+
+|`topic`
+|string
+|نمط موضوع MQTT لـ WIS2
+
+|`save_path`
+|string \| null
+|المجلد الفرعي تحت جذر البيانات حيث تُحفظ الملفات
+
+|`filter`
+|كائن
+|فلتر قائم على قواعد (الكائن الفارغ `{}` يعني عدم الفلترة)
+
+|`credentials`
+|كائن \| null
+|بيانات الاعتماد المستخدمة للتنزيل. تُخفى الأسرار في الاستجابات.
+
+|`queue`
+|string
+|قائمة انتظار التنزيل: `high_priority` أو `small_files` أو `large_files`
+|===
+
+=== مخطط الفلتر [[_مخطط_الفلتر]]
+
+تستخدم الفلاتر قائمة مرتَّبة من القواعد. تُقيَّم القواعد بالترتيب؛ يُطبَّق إجراء أول قاعدة مطابقة. إذا لم تتطابق أي قاعدة، يُقبَل الملف.
+
+[cols="1,1,3"]
+|===
+|الحقل |النوع |الوصف
+
+|`name`
+|string
+|اسم الفلتر للتعريف
+
+|`rules`
+|مصفوفة
+|قائمة مرتَّبة من <<_مخطط_قاعدة_الفلتر,قواعد الفلتر>>
+|===
+
+==== مخطط قاعدة الفلتر [[_مخطط_قاعدة_الفلتر]]
+
+[cols="1,1,3"]
+|===
+|الحقل |النوع |الوصف
+
+|`id`
+|string
+|معرِّف القاعدة الفريد
+
+|`order`
+|integer
+|ترتيب التنفيذ — القيم الأصغر تُنفَّذ أولًا
+
+|`match`
+|كائن
+|الشرط للتحقق منه. راجع <<_شروط_التطابق>>.
+
+|`action`
+|string
+|`accept` أو `reject` أو `continue`
+|===
+
+==== شروط التطابق [[_شروط_التطابق]]
+
+[cols="1,3"]
+|===
+|الشرط |الوصف
+
+|`media_type`
+|التطابق على نوع MIME للملف
+
+|`size`
+|التطابق على حجم الملف بالبايت
+
+|`centre_id`
+|التطابق على معرِّف المركز المُصدِر (مثال: `de-dwd`، `fr-meteofrance`). الحقل الأول هو رمز البلد ISO2C، والثاني هو اسم وصفي للمركز.
+
+|`data_id`
+|التطابق على معرِّف بيانات WIS2
+
+|`href`
+|التطابق على عنوان URL التنزيل
+
+|`always: true`
+|تطابق غير مشروط (يُستخدم كقاعدة افتراضية شاملة)
+|===
+
+عوامل السلسلة النصية: `equals`، `not_equals`، `in`، `not_in`، `pattern` (glob)، `regex`
+
+عوامل الحجم/العددية: `gt_bytes`، `lt_bytes`، `gte_bytes`، `lte_bytes`، `between_bytes`
+
+المجمِّعات المنطقية: `all` (AND)، `any` (OR)، `not`
+
+==== مثال على الفلتر
+
+قبول ملفات BUFR فقط بحجم أقل من 10 ميجابايت؛ رفض كل شيء آخر:
+
+[source,json]
+----
+{
+  "name": "bufr-small",
+  "rules": [
+    {
+      "id": "accept-small-bufr",
+      "order": 1,
+      "match": {
+        "all": [
+          { "media_type": { "equals": "application/bufr" } },
+          { "size": { "lt_bytes": 10485760 } }
+        ]
+      },
+      "action": "accept"
+    },
+    {
+      "id": "default-reject",
+      "order": 999,
+      "match": { "always": true },
+      "action": "reject"
+    }
+  ]
+}
+----
+
+=== مخطط بيانات الاعتماد [[_مخطط_بيانات_الاعتماد]]
+
+يُستخدم لمصادقة تنزيلات HTTP من مجموعات البيانات ذات الوصول المقيَّد.
+
+NOTE: `password` و`token` للكتابة فقط — تُقبَل في الطلبات لكنها لا تُعاد أبدًا في الاستجابات.
+
+[cols="1,1,3"]
+|===
+|الحقل |النوع |الوصف
+
+|`type`
+|string
+|`basic` أو `bearer`
+
+|`username`
+|string
+|مطلوب عندما يكون `type` هو `basic`
+
+|`password`
+|string (كتابة فقط)
+|مطلوب عندما يكون `type` هو `basic`
+
+|`token`
+|string (كتابة فقط)
+|مطلوب عندما يكون `type` هو `bearer`
+|===
+
+== مرجع أنماط المواضيع
+
+=== هيكل مواضيع WIS2
+
+[source]
+----
+{origin|cache}/a/wis2/{centre-id}/data/{data-policy}/{earth-system-domain}/{category}/...
+----
+
+* `origin` — البيانات الأصلية من مزود البيانات
+* `cache` — نسخة مخزَّنة مؤقتًا من ذاكرة تخزين عالمية (مُوصى به للموثوقية)
+* `{centre-id}` — معرِّف المركز. الحقل الأول هو رمز البلد ISO2C والثاني هو اسم وصفي للمركز (مثال: `de-dwd` لـ Deutscher Wetterdienst، `fr-meteofrance` لـ Météo-France)
+* `{data-policy}` — سياسة بيانات WMO الموحَّدة: `core` (متاح مجانًا) أو `recommended` (قد يتطلب بيانات اعتماد)
+* `{earth-system-domain}` — مجال نظام الأرض من سياسة بيانات WMO الموحَّدة
+
+=== أحرف البدل
+
+[cols="1,1,3"]
+|===
+|النمط |الرمز |الوصف
+
+|مستوى واحد
+|`+`
+|يطابق مستوى واحدًا بالضبط
+
+|متعدد المستويات
+|`#`
+|يطابق صفرًا أو أكثر من المستويات (يجب أن يكون في النهاية)
+|===
+
+=== أمثلة
+
+[cols="2,3"]
+|===
+|النمط |يطابق
+
+|`cache/a/wis2/de-dwd/data/#`
+|جميع بيانات Deutscher Wetterdienst
+
+|`cache/a/wis2/+/data/core/weather/surface-based-observations/#`
+|رصد السطح من جميع المراكز
+
+|`cache/a/wis2/+/data/core/#`
+|جميع البيانات الأساسية من أي مركز
+
+|`cache/a/wis2/+/data/+/weather/#`
+|جميع البيانات الجوية (أي سياسة) من أي مركز
+|===

@@ -1,0 +1,716 @@
+= Referencia de la API de WIS2 Downloader
+:toc: left
+:toc-title: Contenido
+:toclevels: 3
+:icons: font
+:source-highlighter: highlight.js
+:sectnums:
+
+[NOTE]
+====
+Este documento ha sido traducido automáticamente desde el inglés por Claude AI.
+Los términos del dominio WMO/meteorológico deben ser revisados por un hablante nativo antes
+de su uso en producción. Consulte el link:../en/[documento original en inglés] para la versión autoritativa.
+====
+
+== Descripción general
+
+WIS2 Downloader expone una REST API para gestionar suscripciones y supervisar el sistema.
+
+* **URL base:** `http://localhost:5002`
+* **Especificación OpenAPI:** `http://localhost:5002/openapi`
+* **Swagger UI:** `http://localhost:5002/swagger`
+
+NOTE: Reemplace `localhost:5002` con la dirección de su servidor si despliega de forma remota. La URL base se configura mediante `WIS2DOWNLOADER_SUBSCRIPTION_MANAGER_URL` en `.env`.
+
+== Autenticación
+
+La API no requiere autenticación. En producción, colóquela detrás de un proxy inverso con autenticación (consulte la sección link:admin-guide.html#_access_control[Control de acceso] de la Guía de administración).
+
+== API de suscripciones
+
+Cada suscripción se identifica por un UUID y asocia un topic MQTT, una ruta de guardado, un filtro opcional, credenciales opcionales y una cola. Varias suscripciones pueden compartir el mismo topic — la conexión MQTT se abre una sola vez y los mensajes se enrutan a todas las suscripciones coincidentes.
+
+=== Listar suscripciones
+
+Devuelve todas las suscripciones activas agrupadas por topic.
+
+[source,http]
+----
+GET /subscriptions
+----
+
+==== Respuesta
+
+[cols="1,3"]
+|===
+|Estado |Descripción
+
+|200
+|Éxito — mapa de topic → mapa de UUID de suscripción → detalle de suscripción
+
+|503
+|Redis no disponible
+|===
+
+==== Ejemplo
+
+[source,bash]
+----
+curl http://localhost:5002/subscriptions
+----
+
+[source,json]
+----
+{
+  "cache/a/wis2/+/data/core/weather/surface-based-observations/#": {
+    "550e8400-e29b-41d4-a716-446655440000": {
+      "save_path": "surface-obs",
+      "filter": {}
+    },
+    "661f9511-f30c-52e5-b827-557766551111": {
+      "save_path": "surface-obs-bufr",
+      "filter": {
+        "name": "bufr-only",
+        "rules": [
+          { "id": "accept-bufr", "order": 1, "match": { "media_type": { "equals": "application/bufr" } }, "action": "accept" }
+        ]
+      }
+    }
+  }
+}
+----
+
+=== Crear suscripción
+
+Crea una nueva suscripción. Asigna un UUID y devuelve el registro de suscripción completo.
+
+Si es la primera suscripción para el topic dado, se abre una conexión MQTT. Las suscripciones adicionales para el mismo topic reutilizan la conexión existente.
+
+[source,http]
+----
+POST /subscriptions
+Content-Type: application/json
+----
+
+==== Cuerpo de la solicitud
+
+[cols="1,1,1,3"]
+|===
+|Campo |Tipo |Requerido |Descripción
+
+|`topic`
+|string
+|Sí
+|Patrón de topic MQTT WIS2. Admite comodines `+` (nivel único) y `#` (multinivel).
+
+|`target`
+|string
+|No
+|Subdirectorio bajo la raíz de datos donde se guardan los archivos.
+
+|`filter`
+|objeto
+|No
+|Filtro basado en reglas. Consulte <<_esquema_de_filtro>>.
+
+|`credentials`
+|objeto
+|No
+|Credenciales HTTP para conjuntos de datos con acceso controlado. Consulte <<_esquema_de_credenciales>>.
+
+|`queue`
+|string
+|No
+|Cola de descarga: `high_priority`, `small_files` (predeterminado) o `large_files`.
+|===
+
+==== Respuesta
+
+[cols="1,3"]
+|===
+|Estado |Descripción
+
+|201
+|Creado — devuelve el registro de suscripción completo
+
+|400
+|Solicitud incorrecta — campos faltantes o inválidos
+
+|503
+|Servicio no disponible — fallo en la conexión a Redis
+|===
+
+==== Cabeceras de respuesta
+
+[cols="1,3"]
+|===
+|Cabecera |Descripción
+
+|`Location`
+|URL para obtener la suscripción creada (`/subscriptions/{id}`)
+|===
+
+==== Ejemplos
+
+[source,bash]
+----
+# Suscripción simple
+curl -X POST http://localhost:5002/subscriptions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "topic": "cache/a/wis2/+/data/core/weather/surface-based-observations/#",
+    "target": "surface-obs"
+  }'
+----
+
+[source,bash]
+----
+# Suscripción con filtro
+curl -X POST http://localhost:5002/subscriptions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "topic": "cache/a/wis2/+/data/core/weather/surface-based-observations/#",
+    "target": "surface-obs-bufr",
+    "filter": {
+      "name": "bufr-only",
+      "rules": [
+        { "id": "accept-bufr", "order": 1, "match": { "media_type": { "equals": "application/bufr" } }, "action": "accept" },
+        { "id": "default-reject", "order": 999, "match": { "always": true }, "action": "reject" }
+      ]
+    }
+  }'
+----
+
+[source,bash]
+----
+# Suscripción a un conjunto de datos con acceso controlado usando autenticación básica
+curl -X POST http://localhost:5002/subscriptions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "topic": "cache/a/wis2/+/data/recommended/weather/surface-based-observations/#",
+    "target": "restricted-obs",
+    "credentials": { "type": "basic", "username": "myuser", "password": "s3cr3t" }
+  }'
+----
+
+[source,bash]
+----
+# Enviar descargas grandes a la cola large-files
+curl -X POST http://localhost:5002/subscriptions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "topic": "cache/a/wis2/fr-meteofrance/data/core/weather/space-based-observations/noaa-21/cris",
+    "target": "space-obs",
+    "queue": "large_files"
+  }'
+----
+
+[source,json]
+----
+{
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "topic": "cache/a/wis2/+/data/core/weather/surface-based-observations/#",
+  "save_path": "surface-obs",
+  "filter": {},
+  "credentials": null,
+  "queue": "small_files"
+}
+----
+
+=== Obtener suscripción
+
+Devuelve el registro completo de una suscripción específica.
+
+[source,http]
+----
+GET /subscriptions/{id}
+----
+
+==== Parámetros de ruta
+
+[cols="1,1,3"]
+|===
+|Parámetro |Tipo |Descripción
+
+|`id`
+|string (UUID)
+|UUID de la suscripción devuelto al crearla
+|===
+
+==== Respuesta
+
+[cols="1,3"]
+|===
+|Estado |Descripción
+
+|200
+|Éxito
+
+|404
+|Suscripción no encontrada
+|===
+
+==== Ejemplo
+
+[source,bash]
+----
+curl http://localhost:5002/subscriptions/550e8400-e29b-41d4-a716-446655440000
+----
+
+[source,json]
+----
+{
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "topic": "cache/a/wis2/+/data/core/weather/surface-based-observations/#",
+  "save_path": "surface-obs",
+  "filter": {},
+  "credentials": null,
+  "queue": "small_files"
+}
+----
+
+NOTE: Los secretos de credenciales (`password`, `token`) nunca se devuelven. Solo se incluyen `type` y `username` (para autenticación básica) en las respuestas.
+
+=== Actualizar suscripción
+
+Actualiza la ruta de guardado, el filtro, las credenciales o la cola de una suscripción existente. El topic no puede cambiarse — elimine y vuelva a crear la suscripción para cambiar el topic.
+
+[source,http]
+----
+PUT /subscriptions/{id}
+Content-Type: application/json
+----
+
+==== Cuerpo de la solicitud
+
+Todos los campos son opcionales. Solo se actualizan los campos proporcionados.
+
+[cols="1,1,3"]
+|===
+|Campo |Tipo |Descripción
+
+|`target`
+|string
+|Nuevo subdirectorio bajo la raíz de datos
+
+|`filter`
+|objeto
+|Nuevo filtro basado en reglas (reemplaza el filtro existente)
+
+|`credentials`
+|objeto
+|Nuevas credenciales (reemplaza las credenciales existentes)
+
+|`queue`
+|string
+|Nueva cola: `high_priority`, `small_files` o `large_files`
+|===
+
+==== Respuesta
+
+[cols="1,3"]
+|===
+|Estado |Descripción
+
+|200
+|Registro de suscripción actualizado
+
+|400
+|Valor de campo inválido
+
+|404
+|Suscripción no encontrada
+
+|503
+|Redis no disponible
+|===
+
+==== Ejemplo
+
+[source,bash]
+----
+curl -X PUT http://localhost:5002/subscriptions/550e8400-e29b-41d4-a716-446655440000 \
+  -H "Content-Type: application/json" \
+  -d '{ "target": "surface-obs-v2", "queue": "high_priority" }'
+----
+
+=== Eliminar suscripción
+
+Elimina una suscripción. Si es la última suscripción para su topic, la conexión MQTT de ese topic se cierra.
+
+[source,http]
+----
+DELETE /subscriptions/{id}
+----
+
+==== Respuesta
+
+[cols="1,3"]
+|===
+|Estado |Descripción
+
+|200
+|Eliminado correctamente
+
+|404
+|Suscripción no encontrada
+
+|503
+|Redis no disponible
+|===
+
+==== Ejemplo
+
+[source,bash]
+----
+curl -X DELETE http://localhost:5002/subscriptions/550e8400-e29b-41d4-a716-446655440000
+----
+
+[source,json]
+----
+{ "status": "deleted", "id": "550e8400-e29b-41d4-a716-446655440000" }
+----
+
+== API de supervisión
+
+=== Comprobación de estado
+
+[source,http]
+----
+GET /health
+----
+
+Siempre devuelve 200. Compruebe el campo `status` para conocer el estado real.
+
+[source,bash]
+----
+curl http://localhost:5002/health
+----
+
+[source,json]
+----
+{ "status": "healthy" }
+----
+
+=== Métricas Prometheus
+
+Devuelve métricas en formato de texto Prometheus.
+
+[source,http]
+----
+GET /metrics
+----
+
+==== Métricas disponibles
+
+[cols="2,1,2,3"]
+|===
+|Métrica |Tipo |Etiquetas |Descripción
+
+|`wis2downloader_notifications_total`
+|Counter
+|status
+|Total de notificaciones procesadas por Celery
+
+|`wis2downloader_downloads_total`
+|Counter
+|cache, media_type
+|Archivos descargados correctamente
+
+|`wis2downloader_downloads_bytes_total`
+|Counter
+|cache, media_type
+|Total de bytes descargados
+
+|`wis2downloader_skipped_total`
+|Counter
+|reason
+|Notificaciones omitidas por motivo
+
+|`wis2downloader_failed_total`
+|Counter
+|cache, reason
+|Descargas fallidas
+
+|`wis2downloader_celery_queue_length`
+|Gauge
+|queue_name
+|Tareas actuales en todas las colas Celery
+|===
+
+==== Ejemplo
+
+[source,bash]
+----
+curl http://localhost:5002/metrics
+----
+
+=== Especificación OpenAPI
+
+[source,http]
+----
+GET /openapi
+----
+
+=== Swagger UI
+
+Documentación API interactiva disponible en:
+
+[source,http]
+----
+GET /
+GET /swagger
+----
+
+== Respuestas de error
+
+Todas las respuestas de error siguen este formato:
+
+[source,json]
+----
+{ "error": "Error message describing the problem" }
+----
+
+=== Mensajes de error comunes
+
+[cols="1,1,2"]
+|===
+|Estado |Error |Causa
+
+|400
+|"No topic provided"
+|POST /subscriptions sin campo `topic`
+
+|400
+|"credentials.type must be 'basic' or 'bearer'"
+|Tipo de credenciales inválido
+
+|400
+|"queue must be one of: high_priority, large_files, small_files"
+|Nombre de cola desconocido
+
+|404
+|"Subscription '{id}' not found"
+|UUID inexistente
+
+|503
+|"Failed to connect to Redis: ..."
+|Redis no disponible
+
+|503
+|"Failed to queue subscription command..."
+|Redis pub/sub fallido
+|===
+
+== Esquemas de datos
+
+=== Suscripción
+
+Registro de suscripción completo tal como se almacena y devuelve por la API.
+
+[cols="1,1,3"]
+|===
+|Campo |Tipo |Descripción
+
+|`id`
+|string (UUID)
+|Identificador único asignado al crear la suscripción
+
+|`topic`
+|string
+|Patrón de topic MQTT WIS2
+
+|`save_path`
+|string \| null
+|Subdirectorio bajo la raíz de datos donde se guardan los archivos
+
+|`filter`
+|objeto
+|Filtro basado en reglas (objeto vacío `{}` significa sin filtrado)
+
+|`credentials`
+|objeto \| null
+|Credenciales usadas para la descarga. Los secretos se ocultan en las respuestas.
+
+|`queue`
+|string
+|Cola de descarga: `high_priority`, `small_files` o `large_files`
+|===
+
+=== Esquema de filtro [[_esquema_de_filtro]]
+
+Los filtros usan una lista ordenada de reglas. Las reglas se evalúan en orden; se aplica la acción de la primera regla que coincida. Si ninguna regla coincide, el archivo se acepta.
+
+[cols="1,1,3"]
+|===
+|Campo |Tipo |Descripción
+
+|`name`
+|string
+|Nombre del filtro para identificación
+
+|`rules`
+|array
+|Lista ordenada de <<_esquema_de_regla_de_filtro,reglas de filtro>>
+|===
+
+==== Esquema de regla de filtro [[_esquema_de_regla_de_filtro]]
+
+[cols="1,1,3"]
+|===
+|Campo |Tipo |Descripción
+
+|`id`
+|string
+|Identificador único de la regla
+
+|`order`
+|integer
+|Orden de ejecución — los valores más bajos se ejecutan primero
+
+|`match`
+|objeto
+|Condición a evaluar. Consulte <<_condiciones_de_coincidencia>>.
+
+|`action`
+|string
+|`accept`, `reject` o `continue`
+|===
+
+==== Condiciones de coincidencia [[_condiciones_de_coincidencia]]
+
+[cols="1,3"]
+|===
+|Condición |Descripción
+
+|`media_type`
+|Coincidencia en el tipo MIME del archivo
+
+|`size`
+|Coincidencia en el tamaño del archivo en bytes
+
+|`centre_id`
+|Coincidencia en el ID del centro emisor (ej. `de-dwd`, `fr-meteofrance`). El primer campo es el código de país ISO2C, el segundo es un nombre descriptivo del centro.
+
+|`data_id`
+|Coincidencia en el ID de datos WIS2
+
+|`href`
+|Coincidencia en la URL de descarga
+
+|`always: true`
+|Coincidencia incondicional (usar como regla comodín predeterminada)
+|===
+
+Operadores de cadena: `equals`, `not_equals`, `in`, `not_in`, `pattern` (glob), `regex`
+
+Operadores de tamaño/numérico: `gt_bytes`, `lt_bytes`, `gte_bytes`, `lte_bytes`, `between_bytes`
+
+Combinadores lógicos: `all` (Y), `any` (O), `not`
+
+==== Ejemplo de filtro
+
+Aceptar solo archivos BUFR menores de 10 MB; rechazar todo lo demás:
+
+[source,json]
+----
+{
+  "name": "bufr-small",
+  "rules": [
+    {
+      "id": "accept-small-bufr",
+      "order": 1,
+      "match": {
+        "all": [
+          { "media_type": { "equals": "application/bufr" } },
+          { "size": { "lt_bytes": 10485760 } }
+        ]
+      },
+      "action": "accept"
+    },
+    {
+      "id": "default-reject",
+      "order": 999,
+      "match": { "always": true },
+      "action": "reject"
+    }
+  ]
+}
+----
+
+=== Esquema de credenciales [[_esquema_de_credenciales]]
+
+Se usa para autenticar descargas HTTP desde conjuntos de datos con acceso controlado.
+
+NOTE: `password` y `token` son de solo escritura — se aceptan en las solicitudes pero nunca se devuelven en las respuestas.
+
+[cols="1,1,3"]
+|===
+|Campo |Tipo |Descripción
+
+|`type`
+|string
+|`basic` o `bearer`
+
+|`username`
+|string
+|Requerido cuando `type` es `basic`
+
+|`password`
+|string (solo escritura)
+|Requerido cuando `type` es `basic`
+
+|`token`
+|string (solo escritura)
+|Requerido cuando `type` es `bearer`
+|===
+
+== Referencia de patrones de topics
+
+=== Estructura de topics WIS2
+
+[source]
+----
+{origin|cache}/a/wis2/{centre-id}/data/{data-policy}/{earth-system-domain}/{category}/...
+----
+
+* `origin` — Datos originales del proveedor de datos
+* `cache` — Copia en caché de un Global Cache (recomendado para mayor fiabilidad)
+* `{centre-id}` — Identificador del centro. El primer campo es el código de país ISO2C y el segundo es un nombre descriptivo del centro (ej. `de-dwd` para Deutscher Wetterdienst, `fr-meteofrance` para Météo-France)
+* `{data-policy}` — Política de datos unificada WMO: `core` (libre acceso) o `recommended` (puede requerir credenciales)
+* `{earth-system-domain}` — Dominio del sistema terrestre de la política de datos unificada WMO
+
+=== Comodines
+
+[cols="1,1,3"]
+|===
+|Patrón |Símbolo |Descripción
+
+|Nivel único
+|`+`
+|Coincide exactamente con un nivel
+
+|Multinivel
+|`#`
+|Coincide con cero o más niveles (debe estar al final)
+|===
+
+=== Ejemplos
+
+[cols="2,3"]
+|===
+|Patrón |Coincide con
+
+|`cache/a/wis2/de-dwd/data/#`
+|Todos los datos del Deutscher Wetterdienst
+
+|`cache/a/wis2/+/data/core/weather/surface-based-observations/#`
+|Observaciones de superficie de todos los centros
+
+|`cache/a/wis2/+/data/core/#`
+|Todos los datos básicos de cualquier centro
+
+|`cache/a/wis2/+/data/+/weather/#`
+|Todos los datos meteorológicos (cualquier política) de cualquier centro
+|===

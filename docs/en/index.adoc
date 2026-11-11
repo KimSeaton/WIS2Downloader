@@ -1,0 +1,20 @@
+= WIS2 Downloader Documentation
+:toc: left
+:toc-title: Contents
+:toclevels: 2
+:icons: font
+
+Welcome to the WIS2 Downloader documentation.
+
+== Getting Started
+
+New to WIS2 Downloader? Start here:
+
+link:quick-start.html[*Quick Start Guide*] — Install, configure, and download your first data in minutes.
+
+== Guides
+
+* link:user-guide.html[User Guide] — Web interface, creating and managing subscriptions, filtering data
+* link:admin-guide.html[Administration Guide] — Deployment, security, configuration, monitoring
+* link:developer-guide.html[Developer Guide] — Architecture, contributing, extending
+* link:api-reference.html[API Reference] — REST API endpoints and data formats

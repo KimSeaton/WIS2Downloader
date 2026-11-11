@@ -1,0 +1,44 @@
+name: Publish docs
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  build-and-publish:
+    name: Build and publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install dependencies
+        run: sudo gem install asciidoctor
+
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Build docs
+        run: |
+          bash docs/build.sh /tmp/site \
+          && touch /tmp/site/.nojekyll
+
+      - name: Verify build
+        run: find /tmp/site -name "*.html" | sort
+
+      - name: Checkout pages branch
+        uses: actions/checkout@v6.0.2
+        with:
+          ref: gh-pages
+          token: ${{secrets.GH_PAT}}
+
+      - name: Copy files
+        run: |
+          git config user.email "dberry@wmo.int" \
+          && git config user.name "David I. Berry" \
+          && git rm -rf . --quiet 2>/dev/null || true \
+          && mv /tmp/site/* . \
+          && touch .nojekyll \
+          && git add . \
+          && git diff --cached --quiet || git commit -m "Publish docs ${GITHUB_REF_NAME:-manual}" \
+          && git push

@@ -1,0 +1,55 @@
+Downloads Browser
+=================
+
+The web interface now includes a Downloads item in the left navigation,
+between Manage Subscriptions and Settings. It provides read-only folder
+browsing, displays file sizes, and lets users download files. In Docker
+deployments, the UI mounts the configured downloads directory read-only at
+CONTAINER_DATA_PATH (normally /data). The file endpoint rejects paths that
+escape the downloads root.
+
+The browser also supports recursive filename search across download folders
+and a toggle between newest-first and oldest-first ordering by modification
+time. Search results now include an explicit Clear search button, and the sort
+button uses named callbacks to rerender the list with the selected order. Its
+label describes the sort order that clicking it will select.
+The same sort toggle orders folders by their modification time too, while
+keeping folders grouped before files.
+
+The search controls are compact icon buttons with tooltips, and the search can
+also be submitted by pressing Enter.
+
+The Downloads search input uses Quasar's borderless mode and CSS overrides
+after the shared input styles so no border appears, including on focus.
+
+The search controls are constrained to a single grid row, and all nested
+search-field elements suppress the shared border, shadow, and focus outline.
+
+Files changed
+-------------
+
+- modules/ui/views/downloads.py — downloads browser UI
+- modules/ui/download_files.py — path validation, recursive search, and sorting
+- modules/ui/main.py — file download endpoint and view routing
+- modules/ui/components/navigation_drawer.py — navigation item
+- modules/ui/i18n/ — labels in all supported interface languages
+- docker-compose.yaml — read-only downloads volume for the UI container
+- tests/test_download_files.py — path, recursive search, symlink, and sort tests
+- docs/en/user-guide.adoc — user guide for the new view
+
+Build and validation commands
+-----------------------------
+
+Rebuild and restart the UI container:
+
+    docker compose up -d --build wis2downloader-ui
+
+Validation commands run during implementation:
+
+    python3 -m compileall -q modules/ui tests/test_download_files.py
+    docker compose config -q
+
+Both completed successfully. A Python smoke test also confirmed that valid
+paths resolve and traversal paths and symlinks to files outside the downloads
+directory are rejected. The pytest suite was not run because pytest is not
+installed in the environment.
